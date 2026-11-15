@@ -1,0 +1,37 @@
+name: Install BINOME STUDIO project
+on:
+  push:
+    paths:
+      - "binome-project.zip"
+      - ".github/workflows/install-project.yml"
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Extract project files
+        run: |
+          python - <<'PYCODE'
+          import zipfile, os
+          archive = 'binome-project.zip'
+          with zipfile.ZipFile(archive) as z:
+              for item in z.infolist():
+                  name = item.filename
+                  if name.startswith('/') or '..' in name.split('/'):
+                      raise SystemExit('Unsafe path in archive')
+                  if name.startswith('.github/workflows/'):
+                      continue
+                  z.extract(item, '.')
+          os.remove(archive)
+          PYCODE
+      - name: Commit project files
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Install BINOME STUDIO v0.4 project' || echo 'No changes to commit'
+          git push
