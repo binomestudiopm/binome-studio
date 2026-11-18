@@ -9,6 +9,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "test": "node --require ./tests/register-typescript.cjs --test",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
