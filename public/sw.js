@@ -1,4 +1,4 @@
-const CACHE_NAME = 'binome-studio-static-v1';
+const CACHE_NAME = 'binome-studio-static-v2';
 
 function isCacheableStaticAsset(request, url) {
   if (request.method !== 'GET' || url.origin !== self.location.origin) return false;
