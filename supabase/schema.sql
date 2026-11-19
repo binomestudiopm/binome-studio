@@ -1,0 +1,8 @@
+create extension if not exists pgcrypto;
+create table public.profiles(id uuid primary key references auth.users(id) on delete cascade, display_name text not null, created_at timestamptz default now());
+create table public.ingredients(id uuid primary key default gen_random_uuid(), name text not null, manufacturer text, supplier text, reference text, package_quantity numeric, package_unit text, package_price numeric, currency text default 'EUR', vat_included boolean, composition jsonb default '{}'::jsonb, allergens text[] default '{}', technical_source text, verified_at date, notes text, created_by uuid references auth.users(id), created_at timestamptz default now());
+create table public.recipes(id uuid primary key default gen_random_uuid(), title text not null, category text, description text, yield_quantity numeric, yield_unit text, version integer default 1, ingredients jsonb default '[]'::jsonb, method jsonb default '[]'::jsonb, timings jsonb default '{}'::jsonb, allergens text[] default '{}', storage text, source_document text, visibility text default 'shared', created_by uuid references auth.users(id), created_at timestamptz default now());
+alter table public.profiles enable row level security;
+alter table public.ingredients enable row level security;
+alter table public.recipes enable row level security;
+-- Définir les politiques RLS et les membres autorisés avant toute mise en production.
