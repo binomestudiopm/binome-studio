@@ -19,7 +19,7 @@ type Material = {
   currency: string | null; vat_included: boolean | null; allergens: string[] | null
   notes: string | null
 }
-type Recipe = { id: string | number; title: string; category: string; yieldQty: string; yieldUnit: string; version: number; ingredients: RecipeIngredient[]; method: string }
+type Recipe = { id: string | number; title: string; category: string; yieldQty: string; yieldUnit: string; version: number; ingredients: RecipeIngredient[]; method: string; visibility?: string }
 type Draft = { name: string; manufacturer: string; supplier: string; reference: string; quantity: string; unit: string; price: string; currency: string; vat: 'true' | 'false' | 'unknown'; notes: string }
 const blankDraft: Draft = { name: '', manufacturer: '', supplier: '', reference: '', quantity: '', unit: 'kg', price: '', currency: 'EUR', vat: 'unknown', notes: '' }
 const blankIngredient = (): RecipeIngredient => ({ ingredient_id: null, name_snapshot: '', quantity: '', unit: 'g' })
@@ -29,7 +29,7 @@ function mapRecipe(row: any): Recipe {
     id: row.id, title: row.title ?? 'Recette sans nom', category: row.category ?? 'Autres',
     yieldQty: row.yield_quantity == null ? '' : String(row.yield_quantity), yieldUnit: row.yield_unit ?? '', version: row.version ?? 1,
     ingredients: normalizeRecipeIngredients(row.ingredients),
-    method: Array.isArray(row.method) ? row.method.join('\n') : String(row.method ?? ''),
+    method: Array.isArray(row.method) ? row.method.join('\n') : String(row.method ?? ''), visibility: row.visibility ?? 'shared',
   }
 }
 function displayMoney(amount: number, currency: string) {
@@ -60,6 +60,8 @@ export default function Studio() {
   const [recipeCategory, setRecipeCategory] = useState('Toutes')
   const [selectedRecipeId, setSelectedRecipeId] = useState<string | number | null>(null)
   const [creatingRecipe, setCreatingRecipe] = useState(false)
+  const [editingRecipe, setEditingRecipe] = useState(false)
+  const [showHiddenRecipes, setShowHiddenRecipes] = useState(false)
   const [title, setTitle] = useState('')
   const [category, setCategory] = useState(recipeCategories[0])
   const [yieldQuantity, setYieldQuantity] = useState('1')
@@ -104,8 +106,8 @@ export default function Studio() {
   const visibleMaterials = useMemo(() => searchMaterials(materials, materialSearch), [materials, materialSearch])
   const visibleRecipes = useMemo(() => {
     const query = recipeSearch.trim().toLocaleLowerCase('fr')
-    return recipes.filter(item => (recipeCategory === 'Toutes' || item.category === recipeCategory) && item.title.toLocaleLowerCase('fr').includes(query))
-  }, [recipes, recipeSearch, recipeCategory])
+    return recipes.filter(item => (showHiddenRecipes ? item.visibility === 'hidden' : item.visibility !== 'hidden') && (recipeCategory === 'Toutes' || item.category === recipeCategory) && item.title.toLocaleLowerCase('fr').includes(query))
+  }, [recipes, recipeSearch, recipeCategory, showHiddenRecipes])
   const selectedMaterial = materials.find(item => item.id === selectedMaterialId)
   const selectedRecipe = recipes.find(item => item.id === selectedRecipeId)
 
@@ -180,6 +182,42 @@ export default function Studio() {
     setTitle(''); setIngredients([blankIngredient()]); setMethod(''); setSavingRecipe(false)
   }
 
+  const beginEditRecipe = () => {
+    if (!selectedRecipe) return
+    setTitle(selectedRecipe.title); setCategory(selectedRecipe.category)
+    setYieldQuantity(selectedRecipe.yieldQty || '1'); setYieldUnit(selectedRecipe.yieldUnit || 'kg')
+    setIngredients(selectedRecipe.ingredients.map(item => ({ ...item })))
+    setMethod(selectedRecipe.method); setCreatingRecipe(false); setEditingRecipe(true); setError('')
+  }
+  const updateRecipe = async () => {
+    if (!supabase || !userId || !selectedRecipe) { setError('Connectez-vous pour modifier cette recette.'); return }
+    if (!title.trim() || ingredients.length === 0 || ingredients.some(item => !item.ingredient_id || !Number.isFinite(Number(item.quantity)) || Number(item.quantity) <= 0)) {
+      setError('Sélectionnez une matière du catalogue et une quantité positive pour chaque ligne.'); return
+    }
+    setSavingRecipe(true); setError('')
+    const savedIngredients = ingredients.map(item => ({
+      ingredient_id: item.ingredient_id,
+      name_snapshot: materials.find(material => material.id === item.ingredient_id)?.name ?? item.name_snapshot ?? '',
+      quantity: String(item.quantity), unit: item.unit,
+    }))
+    const { data, error: saveError } = await supabase.from('recipes').update({
+      title: title.trim(), category, yield_quantity: Number(yieldQuantity) || 1, yield_unit: yieldUnit,
+      version: (selectedRecipe.version || 1) + 1, ingredients: savedIngredients,
+      method: method.split('\\n').map(step => step.trim()).filter(Boolean),
+    }).eq('id', selectedRecipe.id).select().single()
+    if (saveError) { setError('Modification impossible : ' + saveError.message); setSavingRecipe(false); return }
+    const updated = mapRecipe(data)
+    setRecipes(current => current.map(item => item.id === updated.id ? updated : item))
+    setSelectedRecipeId(updated.id); setEditingRecipe(false); setSavingRecipe(false)
+  }
+  const setSelectedRecipeHidden = async (hidden: boolean) => {
+    if (!supabase || !userId || !selectedRecipe) { setError('Connectez-vous pour modifier cette recette.'); return }
+    const { error: updateError } = await supabase.from('recipes').update({ visibility: hidden ? 'hidden' : 'shared' }).eq('id', selectedRecipe.id)
+    if (updateError) { setError('Impossible de modifier la visibilité : ' + updateError.message); return }
+    setRecipes(current => current.map(item => item.id === selectedRecipe.id ? { ...item, visibility: hidden ? 'hidden' : 'shared' } : item))
+    setSelectedRecipeId(null); setError('')
+  }
+
   const lineCosts = selectedRecipe?.ingredients.map(item => calculateIngredientCost(item, materials.find(material => material.id === item.ingredient_id))) ?? []
   const totalCost = summarizeIngredientCosts(lineCosts)
   if (!ready) return <main className="auth-shell"><div className="auth-card"><p className="gold">BINÔME STUDIO</p><h1>Ouverture de votre atelier…</h1></div></main>
@@ -206,13 +244,13 @@ export default function Studio() {
       </div>}
 
       {tab === 'Recettes' && <div className="recipe-layout"><div className="recipe-library"><div className="library-head"><div><h2>Bibliothèque de recettes</h2><p className="muted">Recettes partagées de l’atelier.</p></div><button className="goldbtn" onClick={() => { setCreatingRecipe(true); setSelectedRecipeId(null); setError('') }}>+ Nouvelle recette</button></div>
-        <input className="search" placeholder="Rechercher une recette…" value={recipeSearch} onChange={event => setRecipeSearch(event.target.value)} /><div className="category-list">{['Toutes', ...recipeCategories].map(item => <button className={recipeCategory === item ? 'chip active' : 'chip'} key={item} onClick={() => setRecipeCategory(item)}>{item}</button>)}</div>
+        <input className="search" placeholder="Rechercher une recette…" value={recipeSearch} onChange={event => setRecipeSearch(event.target.value)} /><button className="text-btn" onClick={() => setShowHiddenRecipes(value => !value)}>{showHiddenRecipes ? "Afficher les recettes visibles" : "Afficher les recettes masquées"}</button><div className="category-list">{['Toutes', ...recipeCategories].map(item => <button className={recipeCategory === item ? 'chip active' : 'chip'} key={item} onClick={() => setRecipeCategory(item)}>{item}</button>)}</div>
         {recipesLoading ? <p className="muted">Chargement des recettes…</p> : <div className="recipe-list">{visibleRecipes.map(item => <button className={selectedRecipeId === item.id && !creatingRecipe ? 'recipe-card chosen' : 'recipe-card'} key={item.id} onClick={() => { setSelectedRecipeId(item.id); setCreatingRecipe(false) }}><span className="recipe-category">{item.category}</span><b>{item.title}</b><small>{item.yieldQty && item.yieldUnit ? `${item.yieldQty} ${item.yieldUnit}` : 'Rendement non renseigné'} · Version {item.version}</small><span className="recipe-arrow">›</span></button>)}{!visibleRecipes.length && <p className="muted">Aucune recette correspondante.</p>}</div>}
-      </div><div className="recipe-detail">{creatingRecipe ? <><p className="gold">NOUVELLE FICHE</p><h2>Créer une recette</h2><label>Nom<input value={title} onChange={event => setTitle(event.target.value)} placeholder="Ex. Mousse chocolat au lait" /></label><div className="form-two"><label>Famille<select value={category} onChange={event => setCategory(event.target.value)}>{recipeCategories.map(item => <option key={item}>{item}</option>)}</select></label><label>Rendement<input inputMode="decimal" value={yieldQuantity} onChange={event => setYieldQuantity(event.target.value)} /></label></div><label>Unité de rendement<select value={yieldUnit} onChange={event => setYieldUnit(event.target.value)}><option>kg</option><option>g</option><option>pièces</option><option>plaque</option><option>litre</option></select></label>
+      </div><div className="recipe-detail">{(creatingRecipe || editingRecipe) ? <><p className="gold">{editingRecipe ? 'MODIFICATION DE FICHE' : 'NOUVELLE FICHE'}</p><h2>{editingRecipe ? 'Modifier la recette' : 'Créer une recette'}</h2><label>Nom<input value={title} onChange={event => setTitle(event.target.value)} placeholder="Ex. Mousse chocolat au lait" /></label><div className="form-two"><label>Famille<select value={category} onChange={event => setCategory(event.target.value)}>{recipeCategories.map(item => <option key={item}>{item}</option>)}</select></label><label>Rendement<input inputMode="decimal" value={yieldQuantity} onChange={event => setYieldQuantity(event.target.value)} /></label></div><label>Unité de rendement<select value={yieldUnit} onChange={event => setYieldUnit(event.target.value)}><option>kg</option><option>g</option><option>pièces</option><option>plaque</option><option>litre</option></select></label>
         <div className="ingredient-head"><h3>Ingrédients du catalogue</h3><button className="text-btn" onClick={() => setIngredients(current => [...current, blankIngredient()])}>+ Ajouter une ligne</button></div>
         {ingredients.map((item, index) => <div className="recipe-ingredient-editor" key={index}><label>Matière<select value={item.ingredient_id ?? ''} disabled={materialsLoading} onChange={event => { const material = materials.find(candidate => candidate.id === event.target.value); updateIngredient(index, { ingredient_id: material?.id ?? null, name_snapshot: material?.name ?? '' }) }}><option value="">Choisir dans le catalogue…</option>{materials.map(material => <option key={material.id} value={material.id}>{getMaterialDisplayName(material)}{material.manufacturer ? ' · ' + material.manufacturer : ''}{material.reference ? ' · Réf. ' + material.reference : ''}</option>)}</select></label><label>Quantité<input type="number" min="0" step="any" inputMode="decimal" value={item.quantity} onChange={event => updateIngredient(index, { quantity: event.target.value })} /></label><label>Unité<select value={item.unit} onChange={event => updateIngredient(index, { unit: event.target.value })}>{units.map(value => <option key={value}>{value}</option>)}</select></label><button className="text-btn remove-line" onClick={() => setIngredients(current => current.filter((_, i) => i !== index))}>Supprimer</button></div>)}
-        {!materials.length && <p className="tiny-note">Ajoutez d’abord les matières au catalogue pour les sélectionner ici.</p>}<label>Procédé<textarea rows={5} value={method} onChange={event => setMethod(event.target.value)} /></label>{error && <p className="auth-error">{error}</p>}<div className="detail-actions"><button className="text-btn" onClick={() => setCreatingRecipe(false)}>Annuler</button><button className="goldbtn" disabled={savingRecipe || !title.trim()} onClick={saveRecipe}>{savingRecipe ? 'Enregistrement…' : 'Créer la recette'}</button></div><p className="tiny-note">La composition enregistre l’identifiant du catalogue et un instantané du nom. Les anciennes lignes libres restent lisibles.</p>
-      </> : selectedRecipe ? <><p className="gold">{selectedRecipe.category.toLocaleUpperCase('fr')}</p><h2>{selectedRecipe.title}</h2><div className="recipe-meta"><span>Rendement <b>{selectedRecipe.yieldQty && selectedRecipe.yieldUnit ? `${selectedRecipe.yieldQty} ${selectedRecipe.yieldUnit}` : 'Non renseigné'}</b></span><span>Version <b>{selectedRecipe.version}</b></span></div><h3>Composition</h3><div className="ingredient-table">{selectedRecipe.ingredients.map((item, index) => <div className="ingredient-row recipe-ingredient-row" key={(item.ingredient_id ?? item.name_snapshot ?? 'ingredient') + index}><span>{(() => { const linkedMaterial = materials.find(material => material.id === item.ingredient_id); return linkedMaterial ? getMaterialDisplayName(linkedMaterial) : item.name_snapshot ?? item.name ?? 'Matière sans nom' })()}<small className={item.ingredient_id ? 'linked-label' : 'legacy-label'}>{item.ingredient_id ? 'Catalogue lié' : 'Ancienne ligne sans lien'}</small>{item.ingredient_id && (() => { const linkedMaterial = materials.find(material => material.id === item.ingredient_id); return linkedMaterial && <small>{linkedMaterial.manufacturer || 'Marque non précisée'}{linkedMaterial.reference ? ' · Réf. ' + linkedMaterial.reference : ''}</small> })()}</span><b>{item.quantity} {item.unit}</b></div>)}{!selectedRecipe.ingredients.length && <p className="muted">Aucun ingrédient.</p>}</div><section className="cost-summary"><h3>Coût matière HTVA</h3><p className="muted">Calcul uniquement avec prix HTVA, conditionnement et unités compatibles.</p>{selectedRecipe.ingredients.map((item, index) => { const cost = calculateIngredientCost(item, materials.find(material => material.id === item.ingredient_id)); return <div className="cost-line" key={index}><span>{(() => { const linkedMaterial = materials.find(material => material.id === item.ingredient_id); return linkedMaterial ? getMaterialDisplayName(linkedMaterial) : item.name_snapshot ?? item.name ?? 'Matière sans nom' })()}<small>{cost.reason ?? 'Calculé depuis le conditionnement HTVA'}</small></span><b>{cost.amount === null ? 'Non calculable' : displayMoney(cost.amount, cost.currency)}</b></div> })}<div className="cost-total"><span>Total matière</span><b>{totalCost.total === null ? totalCost.reason : displayMoney(totalCost.total, totalCost.currency!) + ' HTVA'}</b></div></section><h3>Procédé de fabrication</h3><p className="method-text">{selectedRecipe.method}</p></> : <div className="empty-detail"><span>✦</span><h2>Votre prochaine création commence ici.</h2><p className="muted">Choisissez une recette ou créez-en une nouvelle.</p><button className="goldbtn" onClick={() => setCreatingRecipe(true)}>+ Nouvelle recette</button></div>}</div></div>}
+        {!materials.length && <p className="tiny-note">Ajoutez d’abord les matières au catalogue pour les sélectionner ici.</p>}<label>Procédé<textarea rows={5} value={method} onChange={event => setMethod(event.target.value)} /></label>{error && <p className="auth-error">{error}</p>}<div className="detail-actions"><button className="text-btn" onClick={() => { setCreatingRecipe(false); setEditingRecipe(false) }}>Annuler</button><button className="goldbtn" disabled={savingRecipe || !title.trim()} onClick={editingRecipe ? updateRecipe : saveRecipe}>{savingRecipe ? 'Enregistrement…' : editingRecipe ? 'Enregistrer les modifications' : 'Créer la recette'}</button></div><p className="tiny-note">La composition enregistre l’identifiant du catalogue et un instantané du nom. Les anciennes lignes libres restent lisibles.</p>
+      </> : selectedRecipe ? <><p className="gold">{selectedRecipe.category.toLocaleUpperCase('fr')}</p><h2>{selectedRecipe.title}</h2><div className="recipe-meta"><span>Rendement <b>{selectedRecipe.yieldQty && selectedRecipe.yieldUnit ? `${selectedRecipe.yieldQty} ${selectedRecipe.yieldUnit}` : 'Non renseigné'}</b></span><span>Version <b>{selectedRecipe.version}</b></span></div><div className="detail-actions"><button className="goldbtn" onClick={beginEditRecipe}>Modifier cette recette</button><button className="text-btn" onClick={() => setSelectedRecipeHidden(selectedRecipe.visibility !== 'hidden')}>{selectedRecipe.visibility === 'hidden' ? 'Réafficher cette recette' : 'Masquer cette recette'}</button></div><h3>Composition</h3><div className="ingredient-table">{selectedRecipe.ingredients.map((item, index) => <div className="ingredient-row recipe-ingredient-row" key={(item.ingredient_id ?? item.name_snapshot ?? 'ingredient') + index}><span>{(() => { const linkedMaterial = materials.find(material => material.id === item.ingredient_id); return linkedMaterial ? getMaterialDisplayName(linkedMaterial) : item.name_snapshot ?? item.name ?? 'Matière sans nom' })()}<small className={item.ingredient_id ? 'linked-label' : 'legacy-label'}>{item.ingredient_id ? 'Catalogue lié' : 'Ancienne ligne sans lien'}</small>{item.ingredient_id && (() => { const linkedMaterial = materials.find(material => material.id === item.ingredient_id); return linkedMaterial && <small>{linkedMaterial.manufacturer || 'Marque non précisée'}{linkedMaterial.reference ? ' · Réf. ' + linkedMaterial.reference : ''}</small> })()}</span><b>{item.quantity} {item.unit}</b></div>)}{!selectedRecipe.ingredients.length && <p className="muted">Aucun ingrédient.</p>}</div><section className="cost-summary"><h3>Coût matière HTVA</h3><p className="muted">Calcul uniquement avec prix HTVA, conditionnement et unités compatibles.</p>{selectedRecipe.ingredients.map((item, index) => { const cost = calculateIngredientCost(item, materials.find(material => material.id === item.ingredient_id)); return <div className="cost-line" key={index}><span>{(() => { const linkedMaterial = materials.find(material => material.id === item.ingredient_id); return linkedMaterial ? getMaterialDisplayName(linkedMaterial) : item.name_snapshot ?? item.name ?? 'Matière sans nom' })()}<small>{cost.reason ?? 'Calculé depuis le conditionnement HTVA'}</small></span><b>{cost.amount === null ? 'Non calculable' : displayMoney(cost.amount, cost.currency)}</b></div> })}<div className="cost-total"><span>Total matière</span><b>{totalCost.total === null ? totalCost.reason : displayMoney(totalCost.total, totalCost.currency!) + ' HTVA'}</b></div></section><h3>Procédé de fabrication</h3><p className="method-text">{selectedRecipe.method}</p></> : <div className="empty-detail"><span>✦</span><h2>Votre prochaine création commence ici.</h2><p className="muted">Choisissez une recette ou créez-en une nouvelle.</p><button className="goldbtn" onClick={() => setCreatingRecipe(true)}>+ Nouvelle recette</button></div>}</div></div>}
 
       {tab === 'Calculateur' && <CostCalculator recipes={recipes} materials={materials} />}
       {!['Accueil', 'Recettes', 'Matières premières', 'Calculateur'].includes(tab) && <div className="panel"><h2>{tab}</h2><p className="muted">Ce module reste à développer.</p></div>}
