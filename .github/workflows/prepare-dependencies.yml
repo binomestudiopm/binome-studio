@@ -1,0 +1,32 @@
+name: Prepare BINOME STUDIO dependencies
+on:
+  push:
+    branches:
+      - feature/recipe-editing
+    paths:
+      - "package.json"
+      - ".github/workflows/prepare-dependencies.yml"
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  lockfile:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Generate package lock
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+      - name: Commit lockfile
+        run: |
+          if [ -f package-lock.json ] && ! git diff --quiet -- package-lock.json; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add package-lock.json
+            git commit -m "Add npm lockfile for Vercel builds"
+            git push
+          fi
